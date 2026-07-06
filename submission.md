@@ -2,9 +2,6 @@
 
 ## AI Usage
 
-- Used AI to get oriented on each service file before touching any issue —
-  asked "what is this module responsible for and what does each function do"
-  for each file in `services/`.
 - Used AI to help draft the initial codebase map structure after I had
   already read the files myself.
 - Used AI to help design a reproduction plan for Issue #1 (constructing a
@@ -47,7 +44,7 @@
   song title against `search_songs` directly with no duplicates found in
   any single result set. This was a case where the AI's first plausible
   explanation didn't hold up under direct testing, and I wasn't able to
-  find the actual root cause in the time available — documented as an
+  find the actual root cause in the time available, documented as an
   open investigation rather than submitting a guessed fix.
 
 ---
@@ -76,25 +73,25 @@ database-level unique constraint on `(user_id, song_id)`, so a user can
 never have two Rating rows for the same song.
 
 `routes/` contains four blueprint files — `songs.py`, `playlists.py`,
-`users.py`, `feed.py` — one per resource. Every route function is thin: it
+`users.py`, `feed.py`, one per resource. Every route function is thin: it
 parses the request, calls into the matching `services/` function, and
 formats the JSON response. No business logic lives in the routes
 themselves.
 
 `services/` contains the actual logic, split as follows:
-- `streak_service.py` — increments or resets `User.listening_streak` based
+- `streak_service.py`, increments or resets `User.listening_streak` based
   on gaps between listening events.
 - `feed_service.py` — builds the "listening now" feed (rolling 24-hour
   window, deduplicated to one song per friend) and the general "activity
   feed" (no time filter, no dedup, just latest N events).
-- `search_service.py` — case-insensitive song search over title/artist,
+- `search_service.py`, case-insensitive song search over title/artist,
   joined to tags.
-- `notification_service.py` — the generic `create_notification` writer,
+- `notification_service.py`, the generic `create_notification` writer,
   plus two feature-specific functions (`add_to_playlist`, `rate_song`) that
   live here because they happen to trigger (or should trigger)
   notifications, even though the actions themselves belong conceptually to
   playlists and ratings.
-- `playlist_service.py` — playlist creation and retrieval, including the
+- `playlist_service.py`, playlist creation and retrieval, including the
   ordered song list.
 
 `seed_data.py` populates the database with test users, songs, ratings,
@@ -108,16 +105,14 @@ run.
 `notification_service.rate_song(user_id, song_id, score)`. That function
 validates the score is 1–5, looks up the song and user, checks for an
 existing `Rating` row for that `(user_id, song_id)` pair (upserting if
-found, inserting if not — the DB's unique constraint backs this up),
+found, inserting if not, the DB's unique constraint backs this up),
 commits, and returns the `Rating`. Notably, `rate_song` never calls
 `create_notification`, even though the sibling function `add_to_playlist`
-(triggered from `POST /playlists/<id>/songs`) follows almost the same shape
-— mutate the data, then call `create_notification` to tell the song's
-original sharer — but stops short of that last step.
+(triggered from `POST /playlists/<id>/songs`) follows almost the same shape, mutate the data, then call `create_notification` to tell the song's original sharer, but stops short of that last step.
 
 ### Patterns noticed
 
-Routes are uniformly thin — all business logic is pushed into `services/`,
+Routes are uniformly thin, all business logic is pushed into `services/`,
 and every route wraps its service call in a `try/except ValueError` to
 translate domain errors into 404/400 responses. Several services perform
 database queries without deduplication or slicing safeguards despite
@@ -148,7 +143,7 @@ playlist through the app right now.
 ### Issue #3: investigated, not fixed
 
 Initially hypothesized the root cause was a missing `.distinct()` after the
-`outerjoin` against `song_tags` in `search_service.py` — the same song
+`outerjoin` against `song_tags` in `search_service.py`, the same song
 joined to multiple tags would produce one raw SQL row per tag. Testing
 disproved this: SQLAlchemy's ORM identity map automatically collapses
 full-entity query results (`query(Song).all()`) that share the same
@@ -158,7 +153,7 @@ correctly returned only 1 object). Also ruled out genuine duplicate rows
 in the `Song` table (no title had more than one row) and brute-force
 tested every song title against `search_songs` directly, finding no
 duplicates in any single-title search. Did not find the actual triggering
-condition within the time available for this submission — the bug may
+condition within the time available for this submission, the bug may
 depend on a query shape or data condition not yet tested (e.g. a broader
 substring query matching multiple songs at once, or an interaction with
 how `.to_dict()` re-queries tags per song). Leaving this as an open issue
@@ -219,12 +214,12 @@ correctly.
 Found three seeded playlists with 7 songs each via a query joining
 `Playlist` to `playlist_entries` and counting songs per playlist. Picked
 one (`84ccd2aa-2f22-48c2-ab12-39eee9e3184c`) and, in a `flask shell`, ran
-the same query `get_playlist_songs` uses internally — joining `Song` to
+the same query `get_playlist_songs` uses internally, joining `Song` to
 `playlist_entries`, filtering by playlist ID, ordering by `position`
 ascending — directly, without going through the service function. That
 returned all 7 songs in correct order, ending with "Harlem Renaissance."
 Then called `get_playlist_songs(pid)` itself and got back only 6 songs,
-missing "Harlem Renaissance" — the last song in position order.
+missing "Harlem Renaissance", the last song in position order.
 
 **How I found the root cause:**
 Read `playlist_service.py` during initial orientation and noticed the
@@ -232,7 +227,7 @@ return line `return [song.to_dict() for song in songs[:-1]]`, which
 contradicted the function's own docstring ("This function returns all
 songs in the playlist"). Confirmed by comparing the raw query result (7
 songs) against the service function's output (6 songs) on the same
-playlist ID — the two queries are otherwise identical, so the only place
+playlist ID, the two queries are otherwise identical, so the only place
 a song could be dropped is the final list comprehension.
 
 **The root cause:**
@@ -241,7 +236,7 @@ playlist by `position`, but the return statement slices the resulting
 list with `songs[:-1]` before converting to dicts, which drops the last
 element of the list every time, regardless of playlist length. Since the
 songs are ordered ascending by position, the dropped song is always the
-one with the highest position value — i.e., the last song added to the
+one with the highest position value, i.e., the last song added to the
 playlist. This affects every playlist with at least one song; a playlist
 of length 1 would return an empty list, and a playlist of length 7 (as
 tested) returns 6.
@@ -284,7 +279,7 @@ absent.
 
 **The root cause:**
 `rate_song` never calls `create_notification`. This isn't a wrong
-condition or a typo — the notify step that exists in the sibling function
+condition or a typo, the notify step that exists in the sibling function
 `add_to_playlist` was never written for `rate_song` at all. As a result,
 rating a friend's shared song produces no notification for the sharer,
 even though the equivalent playlist-add action does.
@@ -298,7 +293,7 @@ templated body naming the rater, the song, and the score. Verified by
 re-running the reproduction: the sharer's notification count went from 1
 to 2 after a different user rated their song. Also checked the
 self-rating case specifically, since `add_to_playlist` has the same guard
-for the same reason — had the song's own sharer rate their own song and
+for the same reason, had the song's own sharer rate their own song and
 confirmed the notification count stayed at 2 (unchanged), proving the
 guard correctly suppresses self-notifications.
 
@@ -323,8 +318,7 @@ mismatch might be corrupting the SQL filter (confirmed stored
 `ListeningEvent.listened_at` values come back as naive datetimes from
 SQLite while `cutoff` was timezone-aware, causing a `TypeError` on direct
 Python comparison), but verified with a 48-hour-old test event that the
-underlying SQL-level filter still excluded genuinely old events correctly
-— so the naive/aware mismatch, while real, wasn't causing incorrect
+underlying SQL-level filter still excluded genuinely old events correctly, so the naive/aware mismatch, while real, wasn't causing incorrect
 results here. Isolated the actual root cause by testing the specific
 23-hour-ago boundary case: an event within the rolling 24-hour window but
 on the previous calendar day was incorrectly included.
@@ -336,7 +330,7 @@ not a calendar-day boundary. This means a friend's listening event can
 fall on the previous calendar day and still be included, as long as it
 happened within the last 24 hours. A user checking the feed at, say, 10pm
 would see friends who listened as early as 10pm the previous day —
-which they'd naturally call "yesterday" — labeled as "listening now."
+which they'd naturally call "yesterday", labeled as "listening now."
 
 **My fix and side-effect check:**
 Changed the cutoff calculation from `datetime.now(timezone.utc) -
