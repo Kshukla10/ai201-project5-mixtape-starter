@@ -352,3 +352,16 @@ a separate, unrelated timezone-naive/aware mismatch between stored
 `ListeningEvent` timestamps and the timezone-aware `cutoff` value — this
 didn't cause incorrect filtering in testing, but is worth flagging as a
 latent risk in `feed_service.py`.
+
+## Regression Test
+
+`tests/test_streaks.py::test_streak_increments_on_sunday` is a regression
+test for Issue #1. It sets up a user who listens on a Saturday
+(`weekday() == 5`) and then the following Sunday (`weekday() == 6`), and
+asserts the streak increments from 1 to 2. Against the original buggy
+code (`elif days_since_last == 1 and today.weekday() != 6`), this
+assertion would fail — the Sunday listen would fall through to the else
+branch and reset the streak to 1 instead of incrementing it to 2. Against
+the fixed code (`elif days_since_last == 1`), the test passes. Ran
+`pytest tests/test_streaks.py -v` and confirmed all 5 tests in this file
+pass against the current codebase.
