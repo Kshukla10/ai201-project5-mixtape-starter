@@ -17,6 +17,15 @@
   it to explain what `today.weekday() != 6` excludes, then worked through
   why that specific exclusion causes a fall-through to the reset branch on
   a legitimate one-day gap.
+- While reproducing Issue #5, ran into an unrelated error when trying to
+  build a fresh test playlist via `add_to_playlist` (a NOT NULL constraint
+  failure on `playlist_entries.position`). Used AI to help read the
+  SQLAlchemy traceback and identify that `playlist.songs.append(song)`
+  only populates the two foreign key columns on the association table,
+  not the extra `position`/`added_by` columns, which are NOT NULL with no
+  default. Worked around it by testing against playlists already
+  populated by `seed_data.py` instead of creating new ones through the
+  broken path.
 
 ---
 
@@ -96,6 +105,23 @@ with `[:-1]` despite the docstring claiming "all songs" are returned).
 centralizes anything that triggers a notification, regardless of which
 resource the action is really about.
 
+### Additional issue found (not one of the five, not yet fixed)
+
+While reproducing Issue #5, discovered that `add_to_playlist` in
+`notification_service.py` cannot actually add new songs to a playlist.
+`playlist.songs.append(song)` uses SQLAlchemy's simple many-to-many
+`.append()`, which only populates the `playlist_id` and `song_id` columns
+on the `playlist_entries` association table. That table also defines
+`position` and `added_by` as NOT NULL with no default, so the resulting
+INSERT fails with `sqlite3.IntegrityError: NOT NULL constraint failed:
+playlist_entries.position`. Worked around this during testing by using
+playlists pre-populated by `seed_data.py` (which presumably inserts
+directly into `playlist_entries` with all columns specified) rather than
+adding songs through the API. Not fixed as part of this submission since
+it isn't one of the five tracked issues, but noted here since it's a real,
+reproducible bug with clear user impact — nobody can add a song to a
+playlist through the app right now.
+
 ---
 
 ## Root Cause Analysis
@@ -144,3 +170,47 @@ and a normal non-Sunday one-day gap (Tuesday→Wednesday) still increments
 correctly.
 
 ---
+
+### Issue #5: The last song in a playlist never shows up
+
+**How I reproduced it:**
+Found three seeded playlists with 7 songs each via a query joining
+`Playlist` to `playlist_entries` and counting songs per playlist. Picked
+one (`84ccd2aa-2f22-48c2-ab12-39eee9e3184c`) and, in a `flask shell`, ran
+the same query `get_playlist_songs` uses internally — joining `Song` to
+`playlist_entries`, filtering by playlist ID, ordering by `position`
+ascending — directly, without going through the service function. That
+returned all 7 songs in correct order, ending with "Harlem Renaissance."
+Then called `get_playlist_songs(pid)` itself and got back only 6 songs,
+missing "Harlem Renaissance" — the last song in position order.
+
+**How I found the root cause:**
+Read `playlist_service.py` during initial orientation and noticed the
+return line `return [song.to_dict() for song in songs[:-1]]`, which
+contradicted the function's own docstring ("This function returns all
+songs in the playlist"). Confirmed by comparing the raw query result (7
+songs) against the service function's output (6 songs) on the same
+playlist ID — the two queries are otherwise identical, so the only place
+a song could be dropped is the final list comprehension.
+
+**The root cause:**
+`get_playlist_songs` correctly queries and orders every song in the
+playlist by `position`, but the return statement slices the resulting
+list with `songs[:-1]` before converting to dicts, which drops the last
+element of the list every time, regardless of playlist length. Since the
+songs are ordered ascending by position, the dropped song is always the
+one with the highest position value — i.e., the last song added to the
+playlist. This affects every playlist with at least one song; a playlist
+of length 1 would return an empty list, and a playlist of length 7 (as
+tested) returns 6.
+
+**My fix and side-effect check:**
+Changed `songs[:-1]` to `songs` in the return statement, so the full
+ordered list is converted to dicts and returned. Verified by re-running
+the reproduction on the same seeded playlist: `get_playlist_songs` now
+returns all 7 songs, ending with "Harlem Renaissance," matching the raw
+query result exactly. Also checked the other two seeded playlists with 7
+songs each and confirmed both now return all 7 songs in the correct order.
+Did not find any other code that depends on the previous (buggy) shorter
+length, so no related functionality appears to rely on the missing last
+song.
